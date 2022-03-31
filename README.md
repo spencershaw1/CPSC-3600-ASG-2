@@ -1,4 +1,4 @@
 # CPSC3600 Assignment 2 - Can you Ping it?
-## Clemson University Spring 2022
 
-Created by Spencer Shaw
+Created by Spencer Shaw 
+Clemson Univeristy Spring 2022
