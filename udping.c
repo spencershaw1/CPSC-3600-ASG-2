@@ -4,12 +4,72 @@
 #include <stdio.h>
 #include <signal.h>
 #include <sys/socket.h>
+#include <pthread.h>
+#include <unistd.h>
 #include <netdb.h>
 #include "Practical.h"
 
 void sig_handler() {
     printf("Summary goes here.\n");
     exit(0);
+}
+
+struct host {
+    struct addrinfo* address;
+    int sock;
+    char* message;
+    int printMode;
+};
+
+void* send_msg(void* arg) {
+    
+    struct host* sender = (struct host*) arg;
+
+    
+
+    // Send the string
+    int pingStringLen = strlen(sender->message);
+    ssize_t numBytes = sendto(sender->sock, sender->message, pingStringLen, 0,
+        sender->address->ai_addr, sender->address->ai_addrlen);
+    if (numBytes < 0)
+        DieWithSystemMessage("sendto() failed");
+    else if (numBytes != pingStringLen)
+        DieWithUserMessage("sendto() error", "sent unexpected number of bytes");
+    
+    pthread_exit(NULL);
+}
+
+void* recv_msg(void* arg) {
+    
+    struct host* receiver = (struct host*) arg;
+    int pingStringLen = strlen(receiver->message);
+
+
+    // Receive a response
+        
+        struct sockaddr_storage fromAddr; // Source address of server
+        // Set length of from address structure (in-out parameter)
+        socklen_t fromAddrLen = sizeof(fromAddr);
+        char buffer[MAXSTRINGLENGTH + 1]; // I/O buffer
+        ssize_t numBytes = recvfrom(receiver->sock, buffer, MAXSTRINGLENGTH, 0,
+            (struct sockaddr *) &fromAddr, &fromAddrLen);
+        if (numBytes < 0)
+            DieWithSystemMessage("recvfrom() failed");
+        else if (numBytes != pingStringLen)
+            DieWithUserMessage("recvfrom() error", "received unexpected number of bytes");
+
+        // Verify reception from expected source
+        if (!SockAddrsEqual(receiver->address->ai_addr, (struct sockaddr *) &fromAddr))
+            DieWithUserMessage("recvfrom()", "received a packet from unknown source");
+
+        buffer[pingStringLen] = '\0';     // Null-terminate received data
+
+        // Print (if not disabled)
+        if (receiver->printMode == 0) {
+            printf("Received: %s\n", buffer); // Print the echoed string
+        }
+
+    pthread_exit(NULL);
 }
 
 int main(int argc, char *argv[]) {
@@ -59,9 +119,6 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "Expected argument after options\n");
         exit(EXIT_FAILURE);
     }
-
-    printf("Count     %15d\nSize      %15d\nInterval  %15.3lf\nPort      %15s\nServer_ip %15s\n",
-            pingcount, pingsize, pinginterval, portnum, argv[optind]);
 
     // Create socket
     int sock = socket(AF_UNSPEC, SOCK_DGRAM, IPPROTO_UDP);
@@ -122,6 +179,10 @@ int main(int argc, char *argv[]) {
     }
     // Otherwise run as client
     else {
+        // Print settings message
+        printf("Count     %15d\nSize      %15d\nInterval  %15.3lf\nPort      %15s\nServer_ip %15s\n",
+            pingcount, pingsize, pinginterval, portnum, argv[optind]);
+
         struct addrinfo addrCriteria;                   // Criteria for address match
         memset(&addrCriteria, 0, sizeof(addrCriteria)); // Zero out structure
         addrCriteria.ai_family = AF_UNSPEC;             // Any address family
@@ -138,7 +199,7 @@ int main(int argc, char *argv[]) {
         // Build the string
         char* pingString = malloc(pingsize);
         memset(pingString, 'A', pingsize);
-        int pingStringLen = strlen(pingString);
+
         // Send the string to the server
         for (int i = 0; i < pingcount; i++) {
 
@@ -148,36 +209,20 @@ int main(int argc, char *argv[]) {
             if (sock < 0)
                 DieWithSystemMessage("Asocket() failed");
 
-            ssize_t numBytes = sendto(sock, pingString, pingStringLen, 0,
-                servAddr->ai_addr, servAddr->ai_addrlen);
-            if (numBytes < 0)
-                DieWithSystemMessage("sendto() failed");
-            else if (numBytes != pingStringLen)
-                DieWithUserMessage("sendto() error", "sent unexpected number of bytes");
+            // Create thread arguments
+            struct host nodeInfo;
+            nodeInfo.address = servAddr;
+            nodeInfo.message = pingString;
+            nodeInfo.sock = sock;
+            nodeInfo.printMode = noprint;
 
-            // Receive a response
+            // Start and close threads
+            pthread_t tids[2];
+            pthread_create(&tids[1], NULL, &send_msg, &nodeInfo);
+            pthread_create(&tids[2], NULL, &recv_msg, &nodeInfo);
 
-            struct sockaddr_storage fromAddr; // Source address of server
-            // Set length of from address structure (in-out parameter)
-            socklen_t fromAddrLen = sizeof(fromAddr);
-            char buffer[MAXSTRINGLENGTH + 1]; // I/O buffer
-            numBytes = recvfrom(sock, buffer, MAXSTRINGLENGTH, 0,
-                (struct sockaddr *) &fromAddr, &fromAddrLen);
-            if (numBytes < 0)
-                DieWithSystemMessage("recvfrom() failed");
-            else if (numBytes != pingStringLen)
-                DieWithUserMessage("recvfrom() error", "received unexpected number of bytes");
-
-            // Verify reception from expected source
-            if (!SockAddrsEqual(servAddr->ai_addr, (struct sockaddr *) &fromAddr))
-                DieWithUserMessage("recvfrom()", "received a packet from unknown source");
-
-            buffer[pingStringLen] = '\0';     // Null-terminate received data
-
-            // Print (if not disabled)
-            if (!noprint) {
-                printf("Received: %s\n", buffer); // Print the echoed string
-            }
+            pthread_join(tids[1], NULL);
+            pthread_join(tids[2], NULL);
             
         }
 
