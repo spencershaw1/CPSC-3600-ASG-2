@@ -22,6 +22,7 @@ struct host {
     struct options* settings;
     struct timespec* sendTimes;
     struct timespec* recvTimes;
+    struct timespec* rttTimes;
 };
 
 struct options {
@@ -34,7 +35,6 @@ struct options {
 };
 
 void* send_msg(void* arg) {
-    printf("Send start...\n");
     struct host* sender = (struct host*) arg;
 
     struct timespec tp;
@@ -43,11 +43,8 @@ void* send_msg(void* arg) {
     // Send the string
     for (int i = 0; i < sender->settings->pingcount; i++) {
         // Timing stuff
-        printf("Before gettime...\n");
         clock_gettime(CLOCK_REALTIME, &tp);
-        printf ("... After gettime\n");
-        
-        //sender->sendTimes[i] = tp;
+        sender->sendTimes[i] = tp;
 
         int pingStringLen = strlen(sender->message);
         ssize_t numBytes = sendto(sender->sock, sender->message, pingStringLen, 0,
@@ -65,7 +62,7 @@ void* recv_msg(void* arg) {
     
     struct host* receiver = (struct host*) arg;
     int pingStringLen = strlen(receiver->message);
-
+    struct timespec tp;
 
     // Receive a response
     for (int i = 0; i < receiver->settings->pingcount; i++) {
@@ -84,12 +81,26 @@ void* recv_msg(void* arg) {
         if (!SockAddrsEqual(receiver->address->ai_addr, (struct sockaddr *) &fromAddr))
             DieWithUserMessage("recvfrom()", "received a packet from unknown source");
 
+        // Timing stuff
+        clock_gettime(CLOCK_REALTIME, &tp);
+        receiver->recvTimes[i] = tp;
+
         buffer[pingStringLen] = '\0';     // Null-terminate received data
+
+        // Calculate RTT
+        struct timespec diff = {.tv_sec = receiver->recvTimes->tv_sec - receiver->sendTimes->tv_sec, .tv_nsec =
+            receiver->recvTimes->tv_nsec - receiver->sendTimes->tv_nsec};
+        if (diff.tv_nsec < 0) {
+            diff.tv_nsec += 1000000000;
+            diff.tv_sec--;
+        }
+        
+        
 
         // Print (if not disabled)
         if (receiver->settings->noprint == 0) {
-            //long int stime = (receiver->sendTimes[i].tv_sec * 1000000) + (receiver->sendTimes[i].tv_nsec * 0.001);
-            printf("Received: %s\n", buffer); // Print the echoed string
+            printf("Received: %s ", buffer); // Print the echoed string
+            printf("[Time (micros): %ld]\n", (diff.tv_nsec /1000));
         }
     }
 
@@ -146,7 +157,7 @@ int main(int argc, char *argv[]) {
     }
 
     // Create socket
-    int sock = socket(AF_UNSPEC, SOCK_DGRAM, IPPROTO_UDP);
+    //int sock = socket(AF_UNSPEC, SOCK_DGRAM, IPPROTO_UDP);
 
     // Run the Server Code
     if (settings.server == 1) {
@@ -205,7 +216,7 @@ int main(int argc, char *argv[]) {
     // Otherwise run as client
     else {
         // Print settings message
-        printf("Count     %15d\nSize      %15d\nInterval  %15.3lf\nPort      %15s\nServer_ip %15s\n",
+        printf("Count     %15d\nSize      %15d\nInterval  %15.3lf\nPort      %15s\nServer_ip %15s\n\n",
             settings.pingcount, settings.pingsize, settings.pinginterval, settings.portnum, argv[optind]);
 
         struct addrinfo addrCriteria;                   // Criteria for address match
@@ -240,6 +251,15 @@ int main(int argc, char *argv[]) {
         nodeInfo.sock = sock;
         nodeInfo.settings = &settings;
 
+        // Create time tables
+        struct timespec sendTable[nodeInfo.settings->pingcount];
+        struct timespec recvTable[nodeInfo.settings->pingcount];
+        struct timespec rttTable[nodeInfo.settings->pingcount];
+        nodeInfo.recvTimes = recvTable;
+        nodeInfo.sendTimes = sendTable;
+        nodeInfo.recvTimes = rttTable;
+
+
         // Start and close threads
         pthread_t tids[2];
         pthread_create(&tids[1], NULL, &send_msg, &nodeInfo);
@@ -247,6 +267,11 @@ int main(int argc, char *argv[]) {
 
         pthread_join(tids[1], NULL);
         pthread_join(tids[2], NULL);
+
+        // If the prints were suppressed, print a line of asterisks
+        if (nodeInfo.settings->noprint) {
+            printf("**********\n\n");
+        }
 
         freeaddrinfo(servAddr);
         close(sock);
