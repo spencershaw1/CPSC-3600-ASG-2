@@ -7,6 +7,7 @@
 #include <pthread.h>
 #include <unistd.h>
 #include <netdb.h>
+#include <time.h>
 #include "Practical.h"
 
 void sig_handler() {
@@ -18,23 +19,44 @@ struct host {
     struct addrinfo* address;
     int sock;
     char* message;
-    int printMode;
+    struct options* settings;
+    struct timespec* sendTimes;
+    struct timespec* recvTimes;
+};
+
+struct options {
+    int noprint;
+    int server;
+    int pingcount;
+    double pinginterval;
+    char portnum[5];
+    int pingsize;
 };
 
 void* send_msg(void* arg) {
-    
+    printf("Send start...\n");
     struct host* sender = (struct host*) arg;
 
+    struct timespec tp;
     
 
     // Send the string
-    int pingStringLen = strlen(sender->message);
-    ssize_t numBytes = sendto(sender->sock, sender->message, pingStringLen, 0,
-        sender->address->ai_addr, sender->address->ai_addrlen);
-    if (numBytes < 0)
-        DieWithSystemMessage("sendto() failed");
-    else if (numBytes != pingStringLen)
-        DieWithUserMessage("sendto() error", "sent unexpected number of bytes");
+    for (int i = 0; i < sender->settings->pingcount; i++) {
+        // Timing stuff
+        printf("Before gettime...\n");
+        clock_gettime(CLOCK_REALTIME, &tp);
+        printf ("... After gettime\n");
+        
+        //sender->sendTimes[i] = tp;
+
+        int pingStringLen = strlen(sender->message);
+        ssize_t numBytes = sendto(sender->sock, sender->message, pingStringLen, 0,
+            sender->address->ai_addr, sender->address->ai_addrlen);
+        if (numBytes < 0)
+            DieWithSystemMessage("sendto() failed");
+        else if (numBytes != pingStringLen)
+            DieWithUserMessage("sendto() error", "sent unexpected number of bytes");
+    }
     
     pthread_exit(NULL);
 }
@@ -46,7 +68,7 @@ void* recv_msg(void* arg) {
 
 
     // Receive a response
-        
+    for (int i = 0; i < receiver->settings->pingcount; i++) {
         struct sockaddr_storage fromAddr; // Source address of server
         // Set length of from address structure (in-out parameter)
         socklen_t fromAddrLen = sizeof(fromAddr);
@@ -65,9 +87,11 @@ void* recv_msg(void* arg) {
         buffer[pingStringLen] = '\0';     // Null-terminate received data
 
         // Print (if not disabled)
-        if (receiver->printMode == 0) {
+        if (receiver->settings->noprint == 0) {
+            //long int stime = (receiver->sendTimes[i].tv_sec * 1000000) + (receiver->sendTimes[i].tv_nsec * 0.001);
             printf("Received: %s\n", buffer); // Print the echoed string
         }
+    }
 
     pthread_exit(NULL);
 }
@@ -75,14 +99,15 @@ void* recv_msg(void* arg) {
 int main(int argc, char *argv[]) {
     int opt;
 
-    // Flag ints
-    int noprint = 0;
-    int server = 0;
-    // Set default values
-    int pingcount = 0x7fffffff;
-    double pinginterval = 1.0;
-    char portnum[] = "33333";
-    int pingsize = 12;
+    // Create settings struct
+    struct options settings;
+    // Set default options
+    settings.noprint = 0;
+    settings.server = 0;
+    settings.pingcount = 0x7fffffff;
+    settings.pinginterval = 1.0;
+    strcpy(settings.portnum, "33333");
+    settings.pingsize = 12;
 
     // Set a new signal handler
     signal(SIGINT, sig_handler);
@@ -91,22 +116,22 @@ int main(int argc, char *argv[]) {
     while ((opt = getopt(argc, argv, "Snc:i:p:s:")) != -1) {
         switch (opt) {
         case 'n':
-            noprint = 1;
+            settings.noprint = 1;
             break;
         case 'S':
-            server = 1;
+            settings.server = 1;
             break;
         case 'c':
-            pingcount = atoi(optarg);
+            settings.pingcount = atoi(optarg);
             break;
         case 'i':
-            pinginterval = strtod(optarg, NULL);
+            settings.pinginterval = strtod(optarg, NULL);
             break;
         case 'p':
-            strcpy(optarg, portnum);
+            strcpy(settings.portnum, optarg);
             break;
         case 's':
-            pingsize = atoi(optarg);
+            settings.pingsize = atoi(optarg);
             break;
         default: /* '?' */
             fprintf(stderr, "Usage: %s [-t nsecs] [-n] name\n",
@@ -115,7 +140,7 @@ int main(int argc, char *argv[]) {
         }
     }
     // Check if options arguments are missing
-    if ((!server) && optind >= argc) {
+    if ((!settings.server) && optind >= argc) {
         fprintf(stderr, "Expected argument after options\n");
         exit(EXIT_FAILURE);
     }
@@ -124,7 +149,7 @@ int main(int argc, char *argv[]) {
     int sock = socket(AF_UNSPEC, SOCK_DGRAM, IPPROTO_UDP);
 
     // Run the Server Code
-    if (server == 1) {
+    if (settings.server == 1) {
         // Construct the server address structure
         struct addrinfo addrCriteria;                   // Criteria for address
         memset(&addrCriteria, 0, sizeof(addrCriteria)); // Zero out structure
@@ -134,7 +159,7 @@ int main(int argc, char *argv[]) {
         addrCriteria.ai_protocol = IPPROTO_UDP;         // Only UDP socket
 
         struct addrinfo *servAddr; // List of server addresses
-        int rtnVal = getaddrinfo(NULL, portnum, &addrCriteria, &servAddr);
+        int rtnVal = getaddrinfo(NULL, settings.portnum, &addrCriteria, &servAddr);
         if (rtnVal != 0)
             DieWithUserMessage("getaddrinfo() failed", gai_strerror(rtnVal));
 
@@ -181,7 +206,7 @@ int main(int argc, char *argv[]) {
     else {
         // Print settings message
         printf("Count     %15d\nSize      %15d\nInterval  %15.3lf\nPort      %15s\nServer_ip %15s\n",
-            pingcount, pingsize, pinginterval, portnum, argv[optind]);
+            settings.pingcount, settings.pingsize, settings.pinginterval, settings.portnum, argv[optind]);
 
         struct addrinfo addrCriteria;                   // Criteria for address match
         memset(&addrCriteria, 0, sizeof(addrCriteria)); // Zero out structure
@@ -192,42 +217,41 @@ int main(int argc, char *argv[]) {
 
         // Get address(es)
         struct addrinfo *servAddr; // List of server addresses
-        int rtnVal = getaddrinfo(argv[optind], portnum, &addrCriteria, &servAddr);
+        int rtnVal = getaddrinfo(argv[optind], settings.portnum, &addrCriteria, &servAddr);
         if (rtnVal != 0)
             DieWithUserMessage("getaddrinfo() failed", gai_strerror(rtnVal));
         
         // Build the string
-        char* pingString = malloc(pingsize);
-        memset(pingString, 'A', pingsize);
+        char* pingString = malloc(settings.pingsize);
+        memset(pingString, 'A', settings.pingsize);
 
         // Send the string to the server
-        for (int i = 0; i < pingcount; i++) {
 
-            // Create a datagram/UDP socket
-            int sock = socket(servAddr->ai_family, servAddr->ai_socktype,
-                servAddr->ai_protocol); // Socket descriptor for client
-            if (sock < 0)
-                DieWithSystemMessage("Asocket() failed");
+        // Create a datagram/UDP socket
+        int sock = socket(servAddr->ai_family, servAddr->ai_socktype,
+            servAddr->ai_protocol); // Socket descriptor for client
+        if (sock < 0)
+            DieWithSystemMessage("Asocket() failed");
 
-            // Create thread arguments
-            struct host nodeInfo;
-            nodeInfo.address = servAddr;
-            nodeInfo.message = pingString;
-            nodeInfo.sock = sock;
-            nodeInfo.printMode = noprint;
+        // Create thread arguments
+        struct host nodeInfo;
+        nodeInfo.address = servAddr;
+        nodeInfo.message = pingString;
+        nodeInfo.sock = sock;
+        nodeInfo.settings = &settings;
 
-            // Start and close threads
-            pthread_t tids[2];
-            pthread_create(&tids[1], NULL, &send_msg, &nodeInfo);
-            pthread_create(&tids[2], NULL, &recv_msg, &nodeInfo);
+        // Start and close threads
+        pthread_t tids[2];
+        pthread_create(&tids[1], NULL, &send_msg, &nodeInfo);
+        pthread_create(&tids[2], NULL, &recv_msg, &nodeInfo);
 
-            pthread_join(tids[1], NULL);
-            pthread_join(tids[2], NULL);
-            
-        }
+        pthread_join(tids[1], NULL);
+        pthread_join(tids[2], NULL);
 
         freeaddrinfo(servAddr);
         close(sock);
+
+
         exit(0);
     }
 
