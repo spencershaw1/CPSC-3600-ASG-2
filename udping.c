@@ -84,23 +84,26 @@ void* recv_msg(void* arg) {
         // Timing stuff
         clock_gettime(CLOCK_REALTIME, &tp);
         receiver->recvTimes[i] = tp;
-
         buffer[pingStringLen] = '\0';     // Null-terminate received data
 
         // Calculate RTT
-        struct timespec diff = {.tv_sec = receiver->recvTimes->tv_sec - receiver->sendTimes->tv_sec, .tv_nsec =
-            receiver->recvTimes->tv_nsec - receiver->sendTimes->tv_nsec};
+        struct timespec diff = {.tv_sec = receiver->recvTimes[i].tv_sec - receiver->sendTimes[i].tv_sec, .tv_nsec =
+            receiver->recvTimes[i].tv_nsec - receiver->sendTimes[i].tv_nsec};
         if (diff.tv_nsec < 0) {
             diff.tv_nsec += 1000000000;
             diff.tv_sec--;
         }
+
+        // Convert to microseconds
+        int microdiff = diff.tv_nsec / 1000;
+        double millidiff = (double)microdiff / 1000;
         
         
 
         // Print (if not disabled)
         if (receiver->settings->noprint == 0) {
-            printf("Received: %s ", buffer); // Print the echoed string
-            printf("[Time (micros): %ld]\n", (diff.tv_nsec /1000));
+            printf("\t%d\t%ld\t", i+1, numBytes); // Print the echoed string
+            printf("%0.3lf\n", millidiff);
         }
     }
 
