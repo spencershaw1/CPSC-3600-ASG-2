@@ -8,7 +8,13 @@
 #include <unistd.h>
 #include <netdb.h>
 #include <time.h>
+#include <math.h>
 #include "Practical.h"
+
+#define NANO 1000000000
+
+pthread_mutex_t mutexSend;
+pthread_cond_t condSend;
 
 void sig_handler() {
     printf("Summary goes here.\n");
@@ -38,15 +44,28 @@ void* send_msg(void* arg) {
     struct host* sender = (struct host*) arg;
 
     struct timespec tp;
-    
+    time_t start_time = 0;
+    int seq_num;
 
+    pthread_mutex_lock(&mutexSend);
     // Send the string
     for (int i = 0; i < sender->settings->pingcount; i++) {
+
         // Timing stuff
         clock_gettime(CLOCK_REALTIME, &tp);
         sender->sendTimes[i] = tp;
 
         int pingStringLen = strlen(sender->message);
+
+        // Set intervals in the timespec struct
+        if (i == 0) start_time = tp.tv_sec;
+        tp.tv_sec = start_time + (i * sender->settings->pinginterval);
+        tp.tv_nsec = fmod(sender->settings->pinginterval, 1.0) * NANO;
+
+        // Perform the timed wait
+        int rc = 0;
+        while(rc == 0) rc = pthread_cond_timedwait(&condSend, &mutexSend, &tp);
+    
         ssize_t numBytes = sendto(sender->sock, sender->message, pingStringLen, 0,
             sender->address->ai_addr, sender->address->ai_addrlen);
         if (numBytes < 0)
@@ -54,6 +73,7 @@ void* send_msg(void* arg) {
         else if (numBytes != pingStringLen)
             DieWithUserMessage("sendto() error", "sent unexpected number of bytes");
     }
+    pthread_mutex_unlock(&mutexSend);
     
     pthread_exit(NULL);
 }
@@ -70,12 +90,16 @@ void* recv_msg(void* arg) {
         // Set length of from address structure (in-out parameter)
         socklen_t fromAddrLen = sizeof(fromAddr);
         char buffer[MAXSTRINGLENGTH + 1]; // I/O buffer
+
         ssize_t numBytes = recvfrom(receiver->sock, buffer, MAXSTRINGLENGTH, 0,
             (struct sockaddr *) &fromAddr, &fromAddrLen);
         if (numBytes < 0)
             DieWithSystemMessage("recvfrom() failed");
         else if (numBytes != pingStringLen)
             DieWithUserMessage("recvfrom() error", "received unexpected number of bytes");
+
+        // Signal sender that receive is complete
+        pthread_cond_signal(&condSend); 
 
         // Verify reception from expected source
         if (!SockAddrsEqual(receiver->address->ai_addr, (struct sockaddr *) &fromAddr))
@@ -262,19 +286,31 @@ int main(int argc, char *argv[]) {
         nodeInfo.sendTimes = sendTable;
         nodeInfo.recvTimes = rttTable;
 
+        // Initialize mutexes and conditions
+        pthread_mutex_init(&mutexSend, NULL);
+        pthread_cond_init(&condSend, NULL);
 
         // Start and close threads
         pthread_t tids[2];
-        pthread_create(&tids[1], NULL, &send_msg, &nodeInfo);
-        pthread_create(&tids[2], NULL, &recv_msg, &nodeInfo);
+        if(pthread_create(&tids[1], NULL, &send_msg, &nodeInfo) != 0)
+            fprintf(stderr, "Failed to create thread.\n");
+        if(pthread_create(&tids[2], NULL, &recv_msg, &nodeInfo) != 0)
+            fprintf(stderr, "Failed to create thread.\n");
 
-        pthread_join(tids[1], NULL);
-        pthread_join(tids[2], NULL);
+        if(pthread_join(tids[1], NULL) != 0)
+            fprintf(stderr, "Failed to join thread.\n");
+        if(pthread_join(tids[2], NULL) != 0)
+            fprintf(stderr, "Failed to join thread.\n");
+
 
         // If the prints were suppressed, print a line of asterisks
         if (nodeInfo.settings->noprint) {
             printf("**********\n\n");
         }
+
+        // destroy allocated space
+        pthread_mutex_destroy(&mutexSend);
+        pthread_cond_destroy(&condSend);
 
         freeaddrinfo(servAddr);
         close(sock);
