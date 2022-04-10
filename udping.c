@@ -45,11 +45,12 @@ void* send_msg(void* arg) {
 
     struct timespec tp;
     time_t start_time = 0;
-    int seq_num;
+    double abs_ping;
 
-    pthread_mutex_lock(&mutexSend);
+    
     // Send the string
     for (int i = 0; i < sender->settings->pingcount; i++) {
+        pthread_mutex_lock(&mutexSend);
 
         // Timing stuff
         clock_gettime(CLOCK_REALTIME, &tp);
@@ -59,21 +60,30 @@ void* send_msg(void* arg) {
 
         // Set intervals in the timespec struct
         if (i == 0) start_time = tp.tv_sec;
-        tp.tv_sec = start_time + (i * sender->settings->pinginterval);
-        tp.tv_nsec = fmod(sender->settings->pinginterval, 1.0) * NANO;
 
+        abs_ping = start_time + (i * sender->settings->pinginterval);
+        tp.tv_sec = start_time + (i * sender->settings->pinginterval);
+
+        if(fmod(abs_ping, 1) > 0)
+            tp.tv_nsec = fmod(abs_ping,1) * NANO;
+        else
+            tp.tv_nsec = 0;
+        
         // Perform the timed wait
         int rc = 0;
-        while(rc == 0) rc = pthread_cond_timedwait(&condSend, &mutexSend, &tp);
-    
+        while(rc == 0)
+            rc = pthread_cond_timedwait(&condSend, &mutexSend, &tp);
+
         ssize_t numBytes = sendto(sender->sock, sender->message, pingStringLen, 0,
             sender->address->ai_addr, sender->address->ai_addrlen);
         if (numBytes < 0)
             DieWithSystemMessage("sendto() failed");
         else if (numBytes != pingStringLen)
             DieWithUserMessage("sendto() error", "sent unexpected number of bytes");
+
+        pthread_mutex_unlock(&mutexSend);
     }
-    pthread_mutex_unlock(&mutexSend);
+    
     
     pthread_exit(NULL);
 }
@@ -90,6 +100,7 @@ void* recv_msg(void* arg) {
         // Set length of from address structure (in-out parameter)
         socklen_t fromAddrLen = sizeof(fromAddr);
         char buffer[MAXSTRINGLENGTH + 1]; // I/O buffer
+
 
         ssize_t numBytes = recvfrom(receiver->sock, buffer, MAXSTRINGLENGTH, 0,
             (struct sockaddr *) &fromAddr, &fromAddrLen);
@@ -126,9 +137,11 @@ void* recv_msg(void* arg) {
 
         // Print (if not disabled)
         if (receiver->settings->noprint == 0) {
-            printf("\t%d\t%ld\t", i+1, numBytes); // Print the echoed string
+            printf("\t\t\t\t%d\t%ld\t", i+1, numBytes); // Print the echoed string
             printf("%0.3lf\n", millidiff);
         }
+
+        
     }
 
     pthread_exit(NULL);
