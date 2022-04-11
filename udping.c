@@ -54,7 +54,7 @@ void* send_msg(void* arg) {
 
         // Timing stuff
         clock_gettime(CLOCK_REALTIME, &tp);
-        sender->sendTimes[i] = tp;
+        
 
         int pingStringLen = strlen(sender->message);
 
@@ -68,6 +68,8 @@ void* send_msg(void* arg) {
             tp.tv_nsec = fmod(abs_ping,1) * NANO;
         else
             tp.tv_nsec = 0;
+
+        sender->sendTimes[i] = tp;
         
         // Perform the timed wait
         int rc = 0;
