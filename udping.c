@@ -8,7 +8,6 @@
 #include <unistd.h>
 #include <netdb.h>
 #include <time.h>
-#include <math.h>
 #include "Practical.h"
 
 #define NANO 1000000000
@@ -21,6 +20,7 @@ void sig_handler() {
     exit(0);
 }
 
+
 struct host {
     struct addrinfo* address;
     int sock;
@@ -29,6 +29,7 @@ struct host {
     struct timespec* sendTimes;
     struct timespec* recvTimes;
     struct timespec* rttTimes;
+    double* stats;
 };
 
 struct options {
@@ -39,6 +40,41 @@ struct options {
     char portnum[5];
     int pingsize;
 };
+
+// Returns the difference between a stop and start time
+void timespec_diff(struct timespec *start, struct timespec *stop, struct timespec *result) {
+    if ((stop->tv_nsec - start->tv_nsec) < 0) {
+        result->tv_sec = stop->tv_sec - start->tv_sec - 1;
+        result->tv_nsec = stop->tv_nsec - start->tv_nsec + 1000000000;
+    } else {
+        result->tv_sec = stop->tv_sec - start->tv_sec;
+        result->tv_nsec = stop->tv_nsec - start->tv_nsec;
+    }
+    return;
+}
+// Converts timespec to milliseconds of total tole [Should only use with difference, not abs time]
+int timespec_to_millisecond (struct timespec* time) {
+    int milliseconds = 0;
+    milliseconds += time->tv_nsec / 1000000;
+    milliseconds += time->tv_sec * 1000;
+    return milliseconds;
+}
+
+// Adds a time expressed as a double in seconds to the timespec
+void timespec_addtime(double interval, struct timespec *spec) {
+    // Convert interval
+    long long ns = (int)(interval*NANO);
+    // Add to current nsecs
+    ns += spec->tv_nsec;
+    // Get whole seconds
+    int seconds = ns / 1000000000;
+    // Get remainder
+    ns = ns % 1000000000;
+    // Save in given timespec
+    spec->tv_sec += seconds;
+    spec->tv_nsec = ns;
+    return;
+}
 
 void* send_msg(void* arg) {
     struct host* sender = (struct host*) arg;
@@ -54,21 +90,17 @@ void* send_msg(void* arg) {
 
         // Timing stuff
         clock_gettime(CLOCK_REALTIME, &tp);
-        
+
+        //printf("BEFORE: %ld.%ld\n", tp.tv_sec, tp.tv_nsec);
+        timespec_addtime(sender->settings->pinginterval, &tp);
+        //printf("AFTER: %ld.%ld", tp.tv_sec, tp.tv_nsec);
+
+        // Use the first char as numbering
+        char seqchar = i+1;
+        sender->message[0] = seqchar;
 
         int pingStringLen = strlen(sender->message);
-
-        // Set intervals in the timespec struct
-        if (i == 0) start_time = tp.tv_sec;
-
-        abs_ping = start_time + (i * sender->settings->pinginterval);
-        tp.tv_sec = start_time + (i * sender->settings->pinginterval);
-
-        if(fmod(abs_ping, 1) > 0)
-            tp.tv_nsec = fmod(abs_ping,1) * NANO;
-        else
-            tp.tv_nsec = 0;
-
+        
         sender->sendTimes[i] = tp;
         
         // Perform the timed wait
@@ -76,13 +108,14 @@ void* send_msg(void* arg) {
         while(rc == 0)
             rc = pthread_cond_timedwait(&condSend, &mutexSend, &tp);
 
-        ssize_t numBytes = sendto(sender->sock, sender->message, pingStringLen, 0,
-            sender->address->ai_addr, sender->address->ai_addrlen);
-        if (numBytes < 0)
-            DieWithSystemMessage("sendto() failed");
-        else if (numBytes != pingStringLen)
-            DieWithUserMessage("sendto() error", "sent unexpected number of bytes");
-
+        if (i != 6) {
+            ssize_t numBytes = sendto(sender->sock, sender->message, pingStringLen, 0,
+                sender->address->ai_addr, sender->address->ai_addrlen);
+            if (numBytes < 0)
+                DieWithSystemMessage("sendto() failed");
+            else if (numBytes != pingStringLen)
+                DieWithUserMessage("sendto() error", "sent unexpected number of bytes");
+        }
         pthread_mutex_unlock(&mutexSend);
     }
     
@@ -103,13 +136,13 @@ void* recv_msg(void* arg) {
         socklen_t fromAddrLen = sizeof(fromAddr);
         char buffer[MAXSTRINGLENGTH + 1]; // I/O buffer
 
-
         ssize_t numBytes = recvfrom(receiver->sock, buffer, MAXSTRINGLENGTH, 0,
             (struct sockaddr *) &fromAddr, &fromAddrLen);
         if (numBytes < 0)
             DieWithSystemMessage("recvfrom() failed");
         else if (numBytes != pingStringLen)
             DieWithUserMessage("recvfrom() error", "received unexpected number of bytes");
+
 
         // Signal sender that receive is complete
         pthread_cond_signal(&condSend); 
@@ -118,28 +151,54 @@ void* recv_msg(void* arg) {
         if (!SockAddrsEqual(receiver->address->ai_addr, (struct sockaddr *) &fromAddr))
             DieWithUserMessage("recvfrom()", "received a packet from unknown source");
 
+        printf("Buffval = %d, i = %d\n", buffer[0], i);
+        // Check sequence number
+        int seqdiff = buffer[0] - (i+1); // Find difference, accounting for the seqnum starting at 1 instead of 0
+        if (seqdiff != 0) {
+            for (int l = 0; l < seqdiff; l++) {
+                // Check noprint flag
+                if (receiver->settings->noprint == 0) {
+                    printf("\t\t%d\t[PACKET LOST]\n", i+l+1); // Print the echoed string
+                }
+                receiver->recvTimes[i+l].tv_sec = -1; // Invalidate recieve time
+            }
+            i = buffer[0] - 1; // Update i to current packet num, -1 to account to numbering start point
+        }
+
         // Timing stuff
         clock_gettime(CLOCK_REALTIME, &tp);
         receiver->recvTimes[i] = tp;
         buffer[pingStringLen] = '\0';     // Null-terminate received data
 
+        // DEBUG RTT
+        //printf("Secdiff: %ld - %ld = %ld\n", receiver->recvTimes[i].tv_sec, receiver->sendTimes[i].tv_sec, (receiver->recvTimes[i].tv_sec - receiver->sendTimes[i].tv_sec));
+        //printf("NSecdiff: %ld - %ld = %ld\n", receiver->recvTimes[i].tv_nsec, receiver->sendTimes[i].tv_nsec, (receiver->recvTimes[i].tv_nsec - receiver->sendTimes[i].tv_nsec));
+
         // Calculate RTT
-        struct timespec diff = {.tv_sec = receiver->recvTimes[i].tv_sec - receiver->sendTimes[i].tv_sec, .tv_nsec =
-            receiver->recvTimes[i].tv_nsec - receiver->sendTimes[i].tv_nsec};
-        if (diff.tv_nsec < 0) {
-            diff.tv_nsec += 1000000000;
-            diff.tv_sec--;
-        }
+        struct timespec diff;
+        timespec_diff(&receiver->sendTimes[i], &receiver->recvTimes[i], &diff);
+        // Save diff
+        receiver->rttTimes[i].tv_sec = diff.tv_sec;
+        receiver->rttTimes[i].tv_nsec = diff.tv_nsec;
 
         // Convert to microseconds
         int microdiff = diff.tv_nsec / 1000;
         double millidiff = (double)microdiff / 1000;
         
+        // Update maximum
+        if (millidiff > receiver->stats[0]) {
+            receiver->stats[0] = millidiff;
+        }
+        // Update minimum
+        if (millidiff < receiver->stats[1]) {
+            receiver->stats[1] = millidiff;
+        }
+
         
 
         // Print (if not disabled)
         if (receiver->settings->noprint == 0) {
-            printf("\t\t\t\t%d\t%ld\t", i+1, numBytes); // Print the echoed string
+            printf("\t\t%d\t%ld\t", i+1, numBytes); // Print the echoed string
             printf("%0.3lf\n", millidiff);
         }
 
@@ -292,14 +351,16 @@ int main(int argc, char *argv[]) {
         nodeInfo.message = pingString;
         nodeInfo.sock = sock;
         nodeInfo.settings = &settings;
-
+        
         // Create time tables
         struct timespec sendTable[nodeInfo.settings->pingcount];
         struct timespec recvTable[nodeInfo.settings->pingcount];
         struct timespec rttTable[nodeInfo.settings->pingcount];
+        double timestat[2] = { 0, 1000000 };
         nodeInfo.recvTimes = recvTable;
         nodeInfo.sendTimes = sendTable;
-        nodeInfo.recvTimes = rttTable;
+        nodeInfo.rttTimes = rttTable;
+        nodeInfo.stats = timestat;
 
         // Initialize mutexes and conditions
         pthread_mutex_init(&mutexSend, NULL);
@@ -317,12 +378,44 @@ int main(int argc, char *argv[]) {
         if(pthread_join(tids[2], NULL) != 0)
             fprintf(stderr, "Failed to join thread.\n");
 
-
         // If the prints were suppressed, print a line of asterisks
         if (nodeInfo.settings->noprint) {
-            printf("**********\n\n");
+            printf("**********\n");
         }
 
+        int pktcnt = 0; // Tracks number of valid packets
+        int finpkt = 0; // Tracks the final valid packet
+        double pktloss = 0; // Tracks the proportion of lost packets
+        double diffsum = 0; // Tracks the sum of RTTs
+        double avgtime = 0; // Tracks the average of RTTs
+        // Measure packetloss and add valid times
+        for (int i = 0; i < nodeInfo.settings->pingcount; i++) {
+            if (nodeInfo.recvTimes[i].tv_sec != -1) {
+                // Count the valid packet
+                pktcnt++;
+                // Add to sum of RTT [NOTE: Currently assumes <1 sec RTT]
+                diffsum += nodeInfo.rttTimes[i].tv_nsec;
+                // Update the latest valid packet
+                finpkt = i;
+            }
+        }
+        // Calculate packet loss
+        pktloss = 1.0 - ((double)pktcnt / nodeInfo.settings->pingcount);
+        // Calculate average RTT [NOTE: Currently assumes <1 sec RTT]
+        avgtime = ((double)diffsum / pktcnt) / 1000000;
+        
+        struct timespec totaltime;
+        timespec_diff(&nodeInfo.sendTimes[0], &nodeInfo.recvTimes[finpkt], &totaltime);
+        int totalms = timespec_to_millisecond(&totaltime);
+
+        //printf("FIRST SEND: %ld s %ld ns\n", nodeInfo.sendTimes[0].tv_sec, nodeInfo.sendTimes[0].tv_nsec);
+        //printf("LAST RECEIVE: %ld s %ld ns\n", nodeInfo.recvTimes[0].tv_sec, nodeInfo.recvTimes[0].tv_nsec);
+
+        // Print Summary
+        printf("\n%d packets transmitted, %d received, %0.0lf%% packet loss,", nodeInfo.settings->pingcount, pktcnt, pktloss*100);
+        printf("time %d ms\n", totalms);
+        printf("rtt min/avg/max = %0.3lf/%0.3lf/%0.3lf msec\n", nodeInfo.stats[1], avgtime, nodeInfo.stats[0]);
+        
         // destroy allocated space
         pthread_mutex_destroy(&mutexSend);
         pthread_cond_destroy(&condSend);
