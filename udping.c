@@ -265,8 +265,7 @@ int main(int argc, char *argv[]) {
     strcpy(settings.portnum, "33333");
     settings.pingsize = 12;
 
-    // Set a new signal handler
-    signal(SIGINT, sig_handler);
+    
 
     // Get options and arguments
     while ((opt = getopt(argc, argv, "Snc:i:p:s:")) != -1) {
@@ -299,6 +298,10 @@ int main(int argc, char *argv[]) {
     if ((!settings.server) && optind >= argc) {
         fprintf(stderr, "Expected argument after options\n");
         exit(EXIT_FAILURE);
+    }
+
+    if (!settings.server) {
+        signal(SIGINT, sig_handler);
     }
 
     // Run the Server Code
