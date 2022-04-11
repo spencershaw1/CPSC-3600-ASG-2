@@ -15,12 +15,9 @@
 pthread_mutex_t mutexSend;
 pthread_cond_t condSend;
 
-void sig_handler() {
-    printf("Summary goes here.\n");
-    exit(0);
-}
 
 
+// Saves necessary info for the threads
 struct host {
     struct addrinfo* address;
     int sock;
@@ -32,6 +29,12 @@ struct host {
     double* stats;
 };
 
+// Global host for the signal to use
+struct host nodeInfo;
+// Tracks the number of packets that got sent (for interrupted summary)
+int totalsent;
+
+// Saves user settings
 struct options {
     int noprint;
     int server;
@@ -40,6 +43,8 @@ struct options {
     char portnum[5];
     int pingsize;
 };
+
+
 
 // Returns the difference between a stop and start time
 void timespec_diff(struct timespec *start, struct timespec *stop, struct timespec *result) {
@@ -111,11 +116,14 @@ void* send_msg(void* arg) {
         if (i != 6) {
             ssize_t numBytes = sendto(sender->sock, sender->message, pingStringLen, 0,
                 sender->address->ai_addr, sender->address->ai_addrlen);
+            // Update last sent
+            totalsent = i+1;
             if (numBytes < 0)
                 DieWithSystemMessage("sendto() failed");
             else if (numBytes != pingStringLen)
                 DieWithUserMessage("sendto() error", "sent unexpected number of bytes");
         }
+        
         pthread_mutex_unlock(&mutexSend);
     }
     
@@ -205,6 +213,43 @@ void* recv_msg(void* arg) {
     }
 
     pthread_exit(NULL);
+}
+
+// Calculates the summary, prints, and closes
+void sig_handler() {
+    int pktcnt = 0; // Tracks number of valid packets
+        int finpkt = 0; // Tracks the final valid packet
+        double pktloss = 0; // Tracks the proportion of lost packets
+        double diffsum = 0; // Tracks the sum of RTTs
+        double avgtime = 0; // Tracks the average of RTTs
+        // Measure packetloss and add valid times
+        for (int i = 0; i < nodeInfo.settings->pingcount; i++) {
+            if (nodeInfo.recvTimes[i].tv_sec != -1) {
+                // Count the valid packet
+                pktcnt++;
+                // Add to sum of RTT [NOTE: Currently assumes <1 sec RTT]
+                diffsum += nodeInfo.rttTimes[i].tv_nsec;
+                // Update the latest valid packet
+                finpkt = i;
+            }
+        }
+        // Calculate packet loss
+        pktloss = 1.0 - ((double)pktcnt / totalsent);
+        // Calculate average RTT [NOTE: Currently assumes <1 sec RTT]
+        avgtime = ((double)diffsum / pktcnt) / 1000000;
+        
+        struct timespec totaltime;
+        timespec_diff(&nodeInfo.sendTimes[0], &nodeInfo.recvTimes[finpkt], &totaltime);
+        int totalms = timespec_to_millisecond(&totaltime);
+
+        //printf("FIRST SEND: %ld s %ld ns\n", nodeInfo.sendTimes[0].tv_sec, nodeInfo.sendTimes[0].tv_nsec);
+        //printf("LAST RECEIVE: %ld s %ld ns\n", nodeInfo.recvTimes[0].tv_sec, nodeInfo.recvTimes[0].tv_nsec);
+
+        // Print Summary
+        printf("\n%d packets transmitted, %d received, %0.0lf%% packet loss,", totalsent, pktcnt, pktloss*100);
+        printf("time %d ms\n", totalms);
+        printf("rtt min/avg/max = %0.3lf/%0.3lf/%0.3lf msec\n", nodeInfo.stats[1], avgtime, nodeInfo.stats[0]);
+    exit(0);
 }
 
 int main(int argc, char *argv[]) {
@@ -342,7 +387,7 @@ int main(int argc, char *argv[]) {
             DieWithSystemMessage("Asocket() failed");
 
         // Create thread arguments
-        struct host nodeInfo;
+        
         nodeInfo.address = servAddr;
         nodeInfo.message = pingString;
         nodeInfo.sock = sock;
@@ -357,6 +402,11 @@ int main(int argc, char *argv[]) {
         nodeInfo.sendTimes = sendTable;
         nodeInfo.rttTimes = rttTable;
         nodeInfo.stats = timestat;
+
+        // Fill recvTime with invalid info for error checking
+        for (int i = 0; i < nodeInfo.settings->pingcount; i++) {
+            nodeInfo.recvTimes[i].tv_sec = -1;
+        }
 
         // Initialize mutexes and conditions
         pthread_mutex_init(&mutexSend, NULL);
@@ -379,39 +429,10 @@ int main(int argc, char *argv[]) {
             printf("**********\n");
         }
 
-        int pktcnt = 0; // Tracks number of valid packets
-        int finpkt = 0; // Tracks the final valid packet
-        double pktloss = 0; // Tracks the proportion of lost packets
-        double diffsum = 0; // Tracks the sum of RTTs
-        double avgtime = 0; // Tracks the average of RTTs
-        // Measure packetloss and add valid times
-        for (int i = 0; i < nodeInfo.settings->pingcount; i++) {
-            if (nodeInfo.recvTimes[i].tv_sec != -1) {
-                // Count the valid packet
-                pktcnt++;
-                // Add to sum of RTT [NOTE: Currently assumes <1 sec RTT]
-                diffsum += nodeInfo.rttTimes[i].tv_nsec;
-                // Update the latest valid packet
-                finpkt = i;
-            }
-        }
-        // Calculate packet loss
-        pktloss = 1.0 - ((double)pktcnt / nodeInfo.settings->pingcount);
-        // Calculate average RTT [NOTE: Currently assumes <1 sec RTT]
-        avgtime = ((double)diffsum / pktcnt) / 1000000;
         
-        struct timespec totaltime;
-        timespec_diff(&nodeInfo.sendTimes[0], &nodeInfo.recvTimes[finpkt], &totaltime);
-        int totalms = timespec_to_millisecond(&totaltime);
-
-        //printf("FIRST SEND: %ld s %ld ns\n", nodeInfo.sendTimes[0].tv_sec, nodeInfo.sendTimes[0].tv_nsec);
-        //printf("LAST RECEIVE: %ld s %ld ns\n", nodeInfo.recvTimes[0].tv_sec, nodeInfo.recvTimes[0].tv_nsec);
-
-        // Print Summary
-        printf("\n%d packets transmitted, %d received, %0.0lf%% packet loss,", nodeInfo.settings->pingcount, pktcnt, pktloss*100);
-        printf("time %d ms\n", totalms);
-        printf("rtt min/avg/max = %0.3lf/%0.3lf/%0.3lf msec\n", nodeInfo.stats[1], avgtime, nodeInfo.stats[0]);
         
+        raise(SIGINT);
+
         // destroy allocated space
         pthread_mutex_destroy(&mutexSend);
         pthread_cond_destroy(&condSend);
