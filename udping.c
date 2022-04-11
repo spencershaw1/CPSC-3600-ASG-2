@@ -88,7 +88,6 @@ void* send_msg(void* arg) {
     time_t start_time = 0;
     double abs_ping;
 
-    
     // Send the string
     for (int i = 0; i < sender->settings->pingcount; i++) {
         pthread_mutex_lock(&mutexSend);
@@ -101,7 +100,10 @@ void* send_msg(void* arg) {
         //printf("AFTER: %ld.%ld", tp.tv_sec, tp.tv_nsec);
 
         // Use the first char as numbering
-        char seqchar = i+1;
+        int blocknum = 0;
+        char seqchar = (i % 127)+1;
+
+
         sender->message[0] = seqchar;
 
         int pingStringLen = strlen(sender->message);
@@ -113,16 +115,14 @@ void* send_msg(void* arg) {
         while(rc == 0)
             rc = pthread_cond_timedwait(&condSend, &mutexSend, &tp);
 
-        if (i != 6) {
-            ssize_t numBytes = sendto(sender->sock, sender->message, pingStringLen, 0,
-                sender->address->ai_addr, sender->address->ai_addrlen);
-            // Update last sent
-            totalsent = i+1;
-            if (numBytes < 0)
-                DieWithSystemMessage("sendto() failed");
-            else if (numBytes != pingStringLen)
-                DieWithUserMessage("sendto() error", "sent unexpected number of bytes");
-        }
+        ssize_t numBytes = sendto(sender->sock, sender->message, pingStringLen, 0,
+            sender->address->ai_addr, sender->address->ai_addrlen);
+        // Update last sent
+        totalsent = i+1;
+        if (numBytes < 0)
+            DieWithSystemMessage("sendto() failed");
+        else if (numBytes != pingStringLen)
+            DieWithUserMessage("sendto() error", "sent unexpected number of bytes");
         
         pthread_mutex_unlock(&mutexSend);
     }
@@ -136,6 +136,9 @@ void* recv_msg(void* arg) {
     struct host* receiver = (struct host*) arg;
     int pingStringLen = strlen(receiver->message);
     struct timespec tp;
+    int curchar;
+    int prevchar;
+    int blocknum;
 
     // Receive a response
     for (int i = 0; i < receiver->settings->pingcount; i++) {
@@ -160,7 +163,17 @@ void* recv_msg(void* arg) {
             DieWithUserMessage("recvfrom()", "received a packet from unknown source");
 
         // Check sequence number
-        int seqdiff = buffer[0] - (i+1); // Find difference, accounting for the seqnum starting at 1 instead of 0
+        int curchar = buffer[0];
+        curchar += blocknum*127; // Add the current number of blocks
+        if (curchar < prevchar) {
+            curchar += 127; // Add a block this loop too
+            blocknum++; // Increment the block number
+        }
+        else {
+            prevchar = curchar; // Update prevchar
+        }
+        
+        int seqdiff = curchar - (i+1); // Find difference, accounting for the seqnum starting at 1 instead of 0
         if (seqdiff != 0) {
             for (int l = 0; l < seqdiff; l++) {
                 // Check noprint flag
@@ -169,8 +182,10 @@ void* recv_msg(void* arg) {
                 }
                 receiver->recvTimes[i+l].tv_sec = -1; // Invalidate recieve time
             }
-            i = buffer[0] - 1; // Update i to current packet num, -1 to account to numbering start point
+            i = curchar - 1; // Update i to current packet num, -1 to account to numbering start point
         }
+        
+
 
         // Timing stuff
         clock_gettime(CLOCK_REALTIME, &tp);
