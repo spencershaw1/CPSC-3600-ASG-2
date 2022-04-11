@@ -151,7 +151,6 @@ void* recv_msg(void* arg) {
         if (!SockAddrsEqual(receiver->address->ai_addr, (struct sockaddr *) &fromAddr))
             DieWithUserMessage("recvfrom()", "received a packet from unknown source");
 
-        printf("Buffval = %d, i = %d\n", buffer[0], i);
         // Check sequence number
         int seqdiff = buffer[0] - (i+1); // Find difference, accounting for the seqnum starting at 1 instead of 0
         if (seqdiff != 0) {
@@ -257,9 +256,6 @@ int main(int argc, char *argv[]) {
         exit(EXIT_FAILURE);
     }
 
-    // Create socket
-    //int sock = socket(AF_UNSPEC, SOCK_DGRAM, IPPROTO_UDP);
-
     // Run the Server Code
     if (settings.server == 1) {
         // Construct the server address structure
@@ -317,7 +313,7 @@ int main(int argc, char *argv[]) {
     // Otherwise run as client
     else {
         // Print settings message
-        printf("Count     %15d\nSize      %15d\nInterval  %15.3lf\nPort      %15s\nServer_ip %15s\n\n",
+        fprintf(stderr, "Count     %15d\nSize      %15d\nInterval  %15.3lf\nPort      %15s\nServer_ip %15s\n\n",
             settings.pingcount, settings.pingsize, settings.pinginterval, settings.portnum, argv[optind]);
 
         struct addrinfo addrCriteria;                   // Criteria for address match
