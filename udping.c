@@ -10,11 +10,12 @@
 #include <time.h>
 #include "Practical.h"
 
-#define NANO 1000000000
+#define NANO    1000000000
+#define MICRO   1000000
+#define MILLI   1000
 
 pthread_mutex_t mutexSend;
 pthread_cond_t condSend;
-
 
 
 // Saves necessary info for the threads
@@ -50,7 +51,7 @@ struct options {
 void timespec_diff(struct timespec *start, struct timespec *stop, struct timespec *result) {
     if ((stop->tv_nsec - start->tv_nsec) < 0) {
         result->tv_sec = stop->tv_sec - start->tv_sec - 1;
-        result->tv_nsec = stop->tv_nsec - start->tv_nsec + 1000000000;
+        result->tv_nsec = stop->tv_nsec - start->tv_nsec + NANO;
     } else {
         result->tv_sec = stop->tv_sec - start->tv_sec;
         result->tv_nsec = stop->tv_nsec - start->tv_nsec;
@@ -60,8 +61,8 @@ void timespec_diff(struct timespec *start, struct timespec *stop, struct timespe
 // Converts timespec to milliseconds of total tole [Should only use with difference, not abs time]
 int timespec_to_millisecond (struct timespec* time) {
     int milliseconds = 0;
-    milliseconds += time->tv_nsec / 1000000;
-    milliseconds += time->tv_sec * 1000;
+    milliseconds += time->tv_nsec / MICRO;
+    milliseconds += time->tv_sec * MILLI;
     return milliseconds;
 }
 
@@ -72,9 +73,9 @@ void timespec_addtime(double interval, struct timespec *spec) {
     // Add to current nsecs
     ns += spec->tv_nsec;
     // Get whole seconds
-    int seconds = ns / 1000000000;
+    int seconds = ns / NANO;
     // Get remainder
-    ns = ns % 1000000000;
+    ns = ns % NANO;
     // Save in given timespec
     spec->tv_sec += seconds;
     spec->tv_nsec = ns;
@@ -233,37 +234,37 @@ void* recv_msg(void* arg) {
 // Calculates the summary, prints, and closes
 void sig_handler() {
     int pktcnt = 0; // Tracks number of valid packets
-        int finpkt = 0; // Tracks the final valid packet
-        double pktloss = 0; // Tracks the proportion of lost packets
-        double diffsum = 0; // Tracks the sum of RTTs
-        double avgtime = 0; // Tracks the average of RTTs
-        // Measure packetloss and add valid times
-        for (int i = 0; i < nodeInfo.settings->pingcount; i++) {
-            if (nodeInfo.recvTimes[i].tv_sec != -1) {
-                // Count the valid packet
-                pktcnt++;
-                // Add to sum of RTT [NOTE: Currently assumes <1 sec RTT]
-                diffsum += nodeInfo.rttTimes[i].tv_nsec;
-                // Update the latest valid packet
-                finpkt = i;
-            }
+    int finpkt = 0; // Tracks the final valid packet
+    double pktloss = 0; // Tracks the proportion of lost packets
+    double diffsum = 0; // Tracks the sum of RTTs
+    double avgtime = 0; // Tracks the average of RTTs
+    // Measure packetloss and add valid times
+    for (int i = 0; i < nodeInfo.settings->pingcount; i++) {
+        if (nodeInfo.recvTimes[i].tv_sec != -1) {
+            // Count the valid packet
+            pktcnt++;
+            // Add to sum of RTT [NOTE: Currently assumes <1 sec RTT]
+            diffsum += nodeInfo.rttTimes[i].tv_nsec;
+            // Update the latest valid packet
+            finpkt = i;
         }
-        // Calculate packet loss
-        pktloss = 1.0 - ((double)pktcnt / totalsent);
-        // Calculate average RTT [NOTE: Currently assumes <1 sec RTT]
-        avgtime = ((double)diffsum / pktcnt) / 1000000;
-        
-        struct timespec totaltime;
-        timespec_diff(&nodeInfo.sendTimes[0], &nodeInfo.recvTimes[finpkt], &totaltime);
-        int totalms = timespec_to_millisecond(&totaltime);
+    }
+    // Calculate packet loss
+    pktloss = 1.0 - ((double)pktcnt / totalsent);
+    // Calculate average RTT [NOTE: Currently assumes <1 sec RTT]
+    avgtime = ((double)diffsum / pktcnt) / 1000000;
+    
+    struct timespec totaltime;
+    timespec_diff(&nodeInfo.sendTimes[0], &nodeInfo.recvTimes[finpkt], &totaltime);
+    int totalms = timespec_to_millisecond(&totaltime);
 
-        //printf("FIRST SEND: %ld s %ld ns\n", nodeInfo.sendTimes[0].tv_sec, nodeInfo.sendTimes[0].tv_nsec);
-        //printf("LAST RECEIVE: %ld s %ld ns\n", nodeInfo.recvTimes[0].tv_sec, nodeInfo.recvTimes[0].tv_nsec);
+    //printf("FIRST SEND: %ld s %ld ns\n", nodeInfo.sendTimes[0].tv_sec, nodeInfo.sendTimes[0].tv_nsec);
+    //printf("LAST RECEIVE: %ld s %ld ns\n", nodeInfo.recvTimes[0].tv_sec, nodeInfo.recvTimes[0].tv_nsec);
 
-        // Print Summary
-        printf("\n%d packets transmitted, %d received, %0.0lf%% packet loss,", totalsent, pktcnt, pktloss*100);
-        printf("time %d ms\n", totalms);
-        printf("rtt min/avg/max = %0.3lf/%0.3lf/%0.3lf msec\n", nodeInfo.stats[1], avgtime, nodeInfo.stats[0]);
+    // Print Summary
+    printf("\n%d packets transmitted, %d received, %0.0lf%% packet loss,", totalsent, pktcnt, pktloss*100);
+    printf("time %d ms\n", totalms);
+    printf("rtt min/avg/max = %0.3lf/%0.3lf/%0.3lf msec\n", nodeInfo.stats[1], avgtime, nodeInfo.stats[0]);
     exit(0);
 }
 
@@ -412,10 +413,18 @@ int main(int argc, char *argv[]) {
         nodeInfo.settings = &settings;
         
         // Create time tables
-        struct timespec sendTable[nodeInfo.settings->pingcount];
-        struct timespec recvTable[nodeInfo.settings->pingcount];
-        struct timespec rttTable[nodeInfo.settings->pingcount];
-        double timestat[2] = { 0, 1000000 };
+        struct timespec *sendTable, *recvTable, *rttTable;
+        sendTable = (struct timespec*)malloc(nodeInfo.settings->pingcount * sizeof(struct timespec));
+        recvTable = (struct timespec*)malloc(nodeInfo.settings->pingcount * sizeof(struct timespec));
+        rttTable = (struct timespec*)malloc(nodeInfo.settings->pingcount * sizeof(struct timespec));
+        
+        //struct timespec sendTable[nodeInfo.settings->pingcount];
+        //struct timespec recvTable[nodeInfo.settings->pingcount];
+        //struct timespec rttTable[nodeInfo.settings->pingcount];
+
+
+        fprintf(stdout, "successfully dynamically allocated memory\n");
+        double timestat[2] = {0, MICRO};
         nodeInfo.recvTimes = recvTable;
         nodeInfo.sendTimes = sendTable;
         nodeInfo.rttTimes = rttTable;
@@ -454,6 +463,8 @@ int main(int argc, char *argv[]) {
         // destroy allocated space
         pthread_mutex_destroy(&mutexSend);
         pthread_cond_destroy(&condSend);
+
+        //destroy sendTable, recvTable, rttTable
 
         freeaddrinfo(servAddr);
         close(sock);
