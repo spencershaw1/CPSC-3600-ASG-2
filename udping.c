@@ -13,9 +13,7 @@
 #define NANO    1000000000
 #define MICRO   1000000
 #define MILLI   1000
-
-pthread_mutex_t mutexSend;
-pthread_cond_t condSend;
+#define CHARMAX 127
 
 
 // Saves necessary info for the threads
@@ -34,6 +32,9 @@ struct host {
 struct host nodeInfo;
 // Tracks the number of packets that got sent (for interrupted summary)
 int totalsent;
+// Mutexes and conditions
+pthread_mutex_t mutexSend;
+pthread_cond_t condSend;
 
 // Saves user settings
 struct options {
@@ -44,7 +45,6 @@ struct options {
     char portnum[5];
     int pingsize;
 };
-
 
 
 // Returns the difference between a stop and start time
@@ -84,7 +84,6 @@ void timespec_addtime(double interval, struct timespec *spec) {
 
 void* send_msg(void* arg) {
     struct host* sender = (struct host*) arg;
-
     struct timespec tp;
     time_t start_time = 0;
     double abs_ping;
@@ -95,15 +94,11 @@ void* send_msg(void* arg) {
 
         // Timing stuff
         clock_gettime(CLOCK_REALTIME, &tp);
-
-        //printf("BEFORE: %ld.%ld\n", tp.tv_sec, tp.tv_nsec);
         timespec_addtime(sender->settings->pinginterval, &tp);
-        //printf("AFTER: %ld.%ld", tp.tv_sec, tp.tv_nsec);
 
         // Use the first char as numbering
         int blocknum = 0;
-        char seqchar = (i % 127)+1;
-
+        char seqchar = (i % CHARMAX)+1;
 
         sender->message[0] = seqchar;
 
@@ -127,13 +122,11 @@ void* send_msg(void* arg) {
         
         pthread_mutex_unlock(&mutexSend);
     }
-    
-    
+
     pthread_exit(NULL);
 }
 
 void* recv_msg(void* arg) {
-    
     struct host* receiver = (struct host*) arg;
     int pingStringLen = strlen(receiver->message);
     struct timespec tp;
@@ -155,7 +148,6 @@ void* recv_msg(void* arg) {
         else if (numBytes != pingStringLen)
             DieWithUserMessage("recvfrom() error", "received unexpected number of bytes");
 
-
         // Signal sender that receive is complete
         pthread_cond_signal(&condSend); 
 
@@ -165,9 +157,9 @@ void* recv_msg(void* arg) {
 
         // Check sequence number
         int curchar = buffer[0];
-        curchar += blocknum*127; // Add the current number of blocks
+        curchar += blocknum*CHARMAX; // Add the current number of blocks
         if (curchar < prevchar) {
-            curchar += 127; // Add a block this loop too
+            curchar += CHARMAX; // Add a block this loop too
             blocknum++; // Increment the block number
         }
         else {
@@ -185,17 +177,11 @@ void* recv_msg(void* arg) {
             }
             i = curchar - 1; // Update i to current packet num, -1 to account to numbering start point
         }
-        
-
 
         // Timing stuff
         clock_gettime(CLOCK_REALTIME, &tp);
         receiver->recvTimes[i] = tp;
         buffer[pingStringLen] = '\0';     // Null-terminate received data
-
-        // DEBUG RTT
-        //printf("Secdiff: %ld - %ld = %ld\n", receiver->recvTimes[i].tv_sec, receiver->sendTimes[i].tv_sec, (receiver->recvTimes[i].tv_sec - receiver->sendTimes[i].tv_sec));
-        //printf("NSecdiff: %ld - %ld = %ld\n", receiver->recvTimes[i].tv_nsec, receiver->sendTimes[i].tv_nsec, (receiver->recvTimes[i].tv_nsec - receiver->sendTimes[i].tv_nsec));
 
         // Calculate RTT
         struct timespec diff;
@@ -205,27 +191,21 @@ void* recv_msg(void* arg) {
         receiver->rttTimes[i].tv_nsec = diff.tv_nsec;
 
         // Convert to microseconds
-        int microdiff = diff.tv_nsec / 1000;
-        double millidiff = (double)microdiff / 1000;
+        int microdiff = diff.tv_nsec / MILLI;
+        double millidiff = (double)microdiff / MILLI;
         
         // Update maximum
-        if (millidiff > receiver->stats[0]) {
+        if (millidiff > receiver->stats[0])
             receiver->stats[0] = millidiff;
-        }
         // Update minimum
-        if (millidiff < receiver->stats[1]) {
+        if (millidiff < receiver->stats[1])
             receiver->stats[1] = millidiff;
-        }
-
-        
 
         // Print (if not disabled)
         if (receiver->settings->noprint == 0) {
             printf("\t\t%d\t%ld\t", i+1, numBytes); // Print the echoed string
             printf("%0.3lf\n", millidiff);
         }
-
-        
     }
 
     pthread_exit(NULL);
@@ -252,17 +232,14 @@ void sig_handler() {
     // Calculate packet loss
     pktloss = 1.0 - ((double)pktcnt / totalsent);
     // Calculate average RTT [NOTE: Currently assumes <1 sec RTT]
-    avgtime = ((double)diffsum / pktcnt) / 1000000;
+    avgtime = ((double)diffsum / pktcnt) / MICRO;
     
     struct timespec totaltime;
     timespec_diff(&nodeInfo.sendTimes[0], &nodeInfo.recvTimes[finpkt], &totaltime);
     int totalms = timespec_to_millisecond(&totaltime);
 
-    //printf("FIRST SEND: %ld s %ld ns\n", nodeInfo.sendTimes[0].tv_sec, nodeInfo.sendTimes[0].tv_nsec);
-    //printf("LAST RECEIVE: %ld s %ld ns\n", nodeInfo.recvTimes[0].tv_sec, nodeInfo.recvTimes[0].tv_nsec);
-
     // Print Summary
-    printf("\n%d packets transmitted, %d received, %0.0lf%% packet loss,", totalsent, pktcnt, pktloss*100);
+    printf("\n%d packets transmitted, %d received, %0.0lf%% packet loss, ", totalsent, pktcnt, pktloss*100);
     printf("time %d ms\n", totalms);
     printf("rtt min/avg/max = %0.3lf/%0.3lf/%0.3lf msec\n", nodeInfo.stats[1], avgtime, nodeInfo.stats[0]);
     exit(0);
@@ -280,8 +257,6 @@ int main(int argc, char *argv[]) {
     settings.pinginterval = 1.0;
     strcpy(settings.portnum, "33333");
     settings.pingsize = 12;
-
-    
 
     // Get options and arguments
     while ((opt = getopt(argc, argv, "Snc:i:p:s:")) != -1) {
@@ -316,9 +291,8 @@ int main(int argc, char *argv[]) {
         exit(EXIT_FAILURE);
     }
 
-    if (!settings.server) {
+    if (!settings.server)
         signal(SIGINT, sig_handler);
-    }
 
     // Run the Server Code
     if (settings.server == 1) {
@@ -406,7 +380,6 @@ int main(int argc, char *argv[]) {
             DieWithSystemMessage("Asocket() failed");
 
         // Create thread arguments
-        
         nodeInfo.address = servAddr;
         nodeInfo.message = pingString;
         nodeInfo.sock = sock;
@@ -417,13 +390,6 @@ int main(int argc, char *argv[]) {
         sendTable = (struct timespec*)malloc(nodeInfo.settings->pingcount * sizeof(struct timespec));
         recvTable = (struct timespec*)malloc(nodeInfo.settings->pingcount * sizeof(struct timespec));
         rttTable = (struct timespec*)malloc(nodeInfo.settings->pingcount * sizeof(struct timespec));
-        
-        //struct timespec sendTable[nodeInfo.settings->pingcount];
-        //struct timespec recvTable[nodeInfo.settings->pingcount];
-        //struct timespec rttTable[nodeInfo.settings->pingcount];
-
-
-        fprintf(stdout, "successfully dynamically allocated memory\n");
         double timestat[2] = {0, MICRO};
         nodeInfo.recvTimes = recvTable;
         nodeInfo.sendTimes = sendTable;
@@ -456,19 +422,16 @@ int main(int argc, char *argv[]) {
             printf("**********\n");
         }
 
-        
-        
         raise(SIGINT);
 
-        // destroy allocated space
+        // destroy allocated 
         pthread_mutex_destroy(&mutexSend);
         pthread_cond_destroy(&condSend);
-
-        //destroy sendTable, recvTable, rttTable
-
+        free(sendTable);
+        free(recvTable);
+        free(rttTable);
         freeaddrinfo(servAddr);
         close(sock);
-
 
         exit(0);
     }
