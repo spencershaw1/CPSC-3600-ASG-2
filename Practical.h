@@ -1,3 +1,5 @@
+// SPENCER SHAW     JSSHAW 
+// ADAM COPELAND    AKCOPEL
 #ifndef PRACTICAL_H_
 #define PRACTICAL_H_
 
@@ -23,7 +25,7 @@ void HandleTCPClient(int clntSocket);
 int SetupTCPClientSocket(const char *server, const char *service);
 
 enum sizeConstants {
-  MAXSTRINGLENGTH = 128,
+  MAXSTRINGLENGTH = 512,
   BUFSIZE = 512,
 };
 

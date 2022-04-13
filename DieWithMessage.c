@@ -1,3 +1,5 @@
+// SPENCER SHAW     JSSHAW 
+// ADAM COPELAND    AKCOPEL
 #include <stdio.h>
 #include <stdlib.h>
 

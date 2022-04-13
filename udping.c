@@ -1,3 +1,5 @@
+// SPENCER SHAW     JSSHAW 
+// ADAM COPELAND    AKCOPEL
 #include <unistd.h>
 #include <stdlib.h>
 #include <string.h>
@@ -333,7 +335,7 @@ int main(int argc, char *argv[]) {
             ssize_t numBytesRcvd = recvfrom(sock, buffer, MAXSTRINGLENGTH, 0,
                 (struct sockaddr *) &clntAddr, &clntAddrLen);
             if (numBytesRcvd < 0)
-            DieWithSystemMessage("recvfrom() failed");
+                DieWithSystemMessage("recvfrom() failed");
 
             fputs("Handling client ", stdout);
             PrintSocketAddress((struct sockaddr *) &clntAddr, stdout);
@@ -343,9 +345,9 @@ int main(int argc, char *argv[]) {
             ssize_t numBytesSent = sendto(sock, buffer, numBytesRcvd, 0,
                 (struct sockaddr *) &clntAddr, sizeof(clntAddr));
             if (numBytesSent < 0)
-            DieWithSystemMessage("sendto() failed)");
+                DieWithSystemMessage("sendto() failed)");
             else if (numBytesSent != numBytesRcvd)
-            DieWithUserMessage("sendto()", "sent unexpected number of bytes");
+                DieWithUserMessage("sendto()", "sent unexpected number of bytes");
         }
     }
     // Otherwise run as client
@@ -368,8 +370,10 @@ int main(int argc, char *argv[]) {
             DieWithUserMessage("getaddrinfo() failed", gai_strerror(rtnVal));
         
         // Build the string
-        char* pingString = malloc(settings.pingsize);
-        memset(pingString, 'A', settings.pingsize);
+        char* pingString = malloc(settings.pingsize); 
+        memset(pingString, 'A', sizeof(char) * settings.pingsize); 
+        pingString[settings.pingsize] = '\0';
+        printf(" "); // formatting
 
         // Send the string to the server
 
@@ -382,6 +386,7 @@ int main(int argc, char *argv[]) {
         // Create thread arguments
         nodeInfo.address = servAddr;
         nodeInfo.message = pingString;
+        nodeInfo.message[settings.pingsize] = '\0';
         nodeInfo.sock = sock;
         nodeInfo.settings = &settings;
         
